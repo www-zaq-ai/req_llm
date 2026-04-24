@@ -1038,6 +1038,15 @@ defmodule ReqLLM.Provider.Defaults do
       messages: [message]
     }
 
+    logprobs = get_in(first_choice, ["logprobs", "content"])
+
+    provider_meta =
+      data
+      |> Map.drop(["id", "model", "choices", "usage"])
+      |> then(fn meta ->
+        if logprobs, do: Map.put(meta, :logprobs, logprobs), else: meta
+      end)
+
     response = %ReqLLM.Response{
       id: id,
       model: model_name,
@@ -1047,7 +1056,7 @@ defmodule ReqLLM.Provider.Defaults do
       stream: nil,
       usage: usage,
       finish_reason: finish_reason,
-      provider_meta: Map.drop(data, ["id", "model", "choices", "usage"])
+      provider_meta: provider_meta
     }
 
     {:ok, response}

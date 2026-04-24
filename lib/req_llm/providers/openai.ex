@@ -210,6 +210,15 @@ defmodule ReqLLM.Providers.OpenAI do
       type: {:or, [:atom, :string]},
       doc:
         "Constrains the verbosity of the model's response. Supported values: 'low', 'medium', 'high'. Defaults to 'medium'."
+    ],
+    openai_logprobs: [
+      type: :boolean,
+      doc: "Whether to return log probabilities of output tokens"
+    ],
+    openai_top_logprobs: [
+      type: :non_neg_integer,
+      doc:
+        "Number of most likely tokens to return at each position (0–20, requires openai_logprobs: true)"
     ]
   ]
 

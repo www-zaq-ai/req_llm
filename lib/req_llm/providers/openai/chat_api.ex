@@ -112,6 +112,7 @@ defmodule ReqLLM.Providers.OpenAI.ChatAPI do
         |> add_verbosity(opts_map)
         |> add_response_format(opts_map)
         |> add_parallel_tool_calls(opts_map)
+        |> add_logprobs(opts_map)
         |> translate_tool_choice_format()
         |> add_strict_to_tools()
     end
@@ -270,6 +271,14 @@ defmodule ReqLLM.Providers.OpenAI.ChatAPI do
     body
     |> Map.drop(["response_format", :response_format])
     |> maybe_put(:response_format, normalized)
+  end
+
+  defp add_logprobs(body, request_options) do
+    provider_opts = request_options[:provider_options] || []
+
+    body
+    |> maybe_put(:logprobs, provider_opts[:openai_logprobs])
+    |> maybe_put(:top_logprobs, provider_opts[:openai_top_logprobs])
   end
 
   defp add_parallel_tool_calls(body, request_options) do

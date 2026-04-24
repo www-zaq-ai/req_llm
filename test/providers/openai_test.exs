@@ -1338,6 +1338,142 @@ defmodule ReqLLM.Providers.OpenAITest do
     end
   end
 
+  describe "logprobs support" do
+    test "encode_body includes logprobs when openai_logprobs is true" do
+      {:ok, model} = ReqLLM.model("openai:gpt-3.5-turbo")
+      context = context_fixture()
+
+      mock_request = %Req.Request{
+        options: [
+          context: context,
+          model: model.model,
+          stream: false,
+          provider_options: [openai_logprobs: true]
+        ]
+      }
+
+      updated_request = OpenAI.encode_body(mock_request)
+      decoded = Jason.decode!(updated_request.body)
+
+      assert decoded["logprobs"] == true
+      refute Map.has_key?(decoded, "top_logprobs")
+    end
+
+    test "encode_body includes top_logprobs when openai_top_logprobs is set" do
+      {:ok, model} = ReqLLM.model("openai:gpt-3.5-turbo")
+      context = context_fixture()
+
+      mock_request = %Req.Request{
+        options: [
+          context: context,
+          model: model.model,
+          stream: false,
+          provider_options: [openai_logprobs: true, openai_top_logprobs: 5]
+        ]
+      }
+
+      updated_request = OpenAI.encode_body(mock_request)
+      decoded = Jason.decode!(updated_request.body)
+
+      assert decoded["logprobs"] == true
+      assert decoded["top_logprobs"] == 5
+    end
+
+    test "encode_body omits logprobs when not requested" do
+      {:ok, model} = ReqLLM.model("openai:gpt-3.5-turbo")
+      context = context_fixture()
+
+      mock_request = %Req.Request{
+        options: [
+          context: context,
+          model: model.model,
+          stream: false
+        ]
+      }
+
+      updated_request = OpenAI.encode_body(mock_request)
+      decoded = Jason.decode!(updated_request.body)
+
+      refute Map.has_key?(decoded, "logprobs")
+      refute Map.has_key?(decoded, "top_logprobs")
+    end
+
+    test "decode_response extracts logprobs into provider_meta" do
+      mock_response_body = %{
+        "id" => "chatcmpl-123",
+        "object" => "chat.completion",
+        "created" => 1_677_652_288,
+        "model" => "gpt-3.5-turbo",
+        "choices" => [
+          %{
+            "index" => 0,
+            "message" => %{"role" => "assistant", "content" => "Hello!"},
+            "finish_reason" => "stop",
+            "logprobs" => %{
+              "content" => [
+                %{"token" => "Hello", "logprob" => -0.03, "bytes" => [72], "top_logprobs" => []},
+                %{"token" => "!", "logprob" => 0.0, "bytes" => [33], "top_logprobs" => []}
+              ]
+            }
+          }
+        ],
+        "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 2, "total_tokens" => 12}
+      }
+
+      mock_resp = %Req.Response{status: 200, body: mock_response_body}
+
+      {:ok, model} = ReqLLM.model("openai:gpt-3.5-turbo")
+      context = context_fixture()
+      mock_req = %Req.Request{options: [context: context, stream: false, model: model.model]}
+
+      {_req, resp} = OpenAI.decode_response({mock_req, mock_resp})
+
+      assert %ReqLLM.Response{} = resp.body
+      logprobs = resp.body.provider_meta[:logprobs]
+
+      assert is_list(logprobs)
+      assert length(logprobs) == 2
+      assert Enum.at(logprobs, 0)["token"] == "Hello"
+      assert Enum.at(logprobs, 0)["logprob"] == -0.03
+      assert Enum.at(logprobs, 1)["token"] == "!"
+    end
+
+    test "decode_response leaves provider_meta without logprobs key when not present" do
+      mock_response_body = %{
+        "id" => "chatcmpl-123",
+        "object" => "chat.completion",
+        "created" => 1_677_652_288,
+        "model" => "gpt-3.5-turbo",
+        "choices" => [
+          %{
+            "index" => 0,
+            "message" => %{"role" => "assistant", "content" => "Hello!"},
+            "finish_reason" => "stop",
+            "logprobs" => nil
+          }
+        ],
+        "usage" => %{"prompt_tokens" => 10, "completion_tokens" => 2, "total_tokens" => 12}
+      }
+
+      mock_resp = %Req.Response{status: 200, body: mock_response_body}
+
+      {:ok, model} = ReqLLM.model("openai:gpt-3.5-turbo")
+      context = context_fixture()
+      mock_req = %Req.Request{options: [context: context, stream: false, model: model.model]}
+
+      {_req, resp} = OpenAI.decode_response({mock_req, mock_resp})
+
+      assert %ReqLLM.Response{} = resp.body
+      refute Map.has_key?(resp.body.provider_meta, :logprobs)
+    end
+
+    test "openai_logprobs schema option is valid" do
+      valid_keys = OpenAI.provider_schema().schema |> Keyword.keys()
+      assert :openai_logprobs in valid_keys
+      assert :openai_top_logprobs in valid_keys
+    end
+  end
+
   describe "ResponsesAPI tool encoding" do
     test "passes through built-in web_search tool definitions" do
       {:ok, model} = ReqLLM.model("openai:gpt-5-nano")
