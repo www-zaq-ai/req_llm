@@ -84,6 +84,15 @@ defmodule ReqLLM.Provider.Defaults.ResponseBuilder do
     # Normalize finish_reason to atom (providers may emit strings)
     finish_reason = normalize_finish_reason(metadata[:finish_reason])
 
+    # Merge streaming logprobs into provider_meta
+    base_provider_meta = metadata[:provider_meta] || %{}
+
+    provider_meta =
+      case acc_data.logprobs do
+        [] -> base_provider_meta
+        tokens -> Map.put(base_provider_meta, :logprobs, tokens)
+      end
+
     # Build response
     base_response = %Response{
       id: metadata[:response_id] || generate_response_id(),
@@ -95,7 +104,7 @@ defmodule ReqLLM.Provider.Defaults.ResponseBuilder do
       stream: nil,
       usage: usage,
       finish_reason: finish_reason,
-      provider_meta: metadata[:provider_meta] || %{},
+      provider_meta: provider_meta,
       error: nil
     }
 
@@ -120,7 +129,8 @@ defmodule ReqLLM.Provider.Defaults.ResponseBuilder do
         thinking_content: [],
         tool_calls: [],
         arg_fragments: %{},
-        reasoning_details: []
+        reasoning_details: [],
+        logprobs: []
       },
       &accumulate_chunk/2
     )
@@ -156,9 +166,18 @@ defmodule ReqLLM.Provider.Defaults.ResponseBuilder do
           acc
       end
 
+    acc =
+      case meta do
+        %{reasoning_details: details} when is_list(details) ->
+          %{acc | reasoning_details: acc.reasoning_details ++ details}
+
+        _ ->
+          acc
+      end
+
     case meta do
-      %{reasoning_details: details} when is_list(details) ->
-        %{acc | reasoning_details: acc.reasoning_details ++ details}
+      %{logprobs: tokens} when is_list(tokens) ->
+        %{acc | logprobs: acc.logprobs ++ tokens}
 
       _ ->
         acc

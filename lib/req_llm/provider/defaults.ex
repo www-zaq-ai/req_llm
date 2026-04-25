@@ -1090,6 +1090,16 @@ defmodule ReqLLM.Provider.Defaults do
                   []
               end
 
+            # Extract logprobs per token from this chunk
+            logprobs_chunks =
+              case get_in(choice, ["logprobs", "content"]) do
+                tokens when is_list(tokens) and tokens != [] ->
+                  [ReqLLM.StreamChunk.meta(%{logprobs: tokens})]
+
+                _ ->
+                  []
+              end
+
             # Extract finish_reason
             finish_reason = Map.get(choice, "finish_reason")
 
@@ -1099,9 +1109,10 @@ defmodule ReqLLM.Provider.Defaults do
               meta = %{finish_reason: normalized_reason}
               meta = if normalized_reason, do: Map.put(meta, :terminal?, true), else: meta
 
-              content_chunks ++ reasoning_details_chunks ++ [ReqLLM.StreamChunk.meta(meta)]
+              content_chunks ++
+                reasoning_details_chunks ++ logprobs_chunks ++ [ReqLLM.StreamChunk.meta(meta)]
             else
-              content_chunks ++ reasoning_details_chunks
+              content_chunks ++ reasoning_details_chunks ++ logprobs_chunks
             end
           end)
 

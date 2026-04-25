@@ -837,6 +837,163 @@ defmodule ReqLLM.Provider.DefaultsTest do
     end
   end
 
+  describe "ResponseBuilder logprobs accumulation" do
+    setup do
+      model = %LLMDB.Model{provider: :openai, id: "gpt-4"}
+      context = %Context{messages: []}
+      %{model: model, context: context}
+    end
+
+    test "sets provider_meta logprobs from meta chunks", %{model: model, context: context} do
+      tokens = [
+        %{"token" => "Hello", "logprob" => -0.5, "bytes" => [72, 101, 108, 108, 111]},
+        %{"token" => " world", "logprob" => -0.3, "bytes" => [32, 119, 111, 114, 108, 100]}
+      ]
+
+      chunks = [
+        StreamChunk.text("Hello world"),
+        StreamChunk.meta(%{logprobs: tokens})
+      ]
+
+      {:ok, response} =
+        ResponseBuilder.build_response(chunks, %{}, model: model, context: context)
+
+      assert response.provider_meta[:logprobs] == tokens
+    end
+
+    test "accumulates logprobs across multiple meta chunks", %{model: model, context: context} do
+      tokens1 = [%{"token" => "Hello", "logprob" => -0.5}]
+      tokens2 = [%{"token" => " world", "logprob" => -0.3}]
+
+      chunks = [
+        StreamChunk.text("Hello"),
+        StreamChunk.meta(%{logprobs: tokens1}),
+        StreamChunk.text(" world"),
+        StreamChunk.meta(%{logprobs: tokens2})
+      ]
+
+      {:ok, response} =
+        ResponseBuilder.build_response(chunks, %{}, model: model, context: context)
+
+      assert response.provider_meta[:logprobs] == tokens1 ++ tokens2
+    end
+
+    test "omits logprobs key from provider_meta when no logprobs chunks", %{
+      model: model,
+      context: context
+    } do
+      chunks = [StreamChunk.text("Hello world")]
+
+      {:ok, response} =
+        ResponseBuilder.build_response(chunks, %{}, model: model, context: context)
+
+      refute Map.has_key?(response.provider_meta, :logprobs)
+    end
+
+    test "merges logprobs into existing provider_meta", %{model: model, context: context} do
+      tokens = [%{"token" => "Hi", "logprob" => -0.1}]
+
+      chunks = [
+        StreamChunk.text("Hi"),
+        StreamChunk.meta(%{logprobs: tokens})
+      ]
+
+      {:ok, response} =
+        ResponseBuilder.build_response(chunks, %{provider_meta: %{model_version: "gpt-4-0125"}},
+          model: model,
+          context: context
+        )
+
+      assert response.provider_meta[:logprobs] == tokens
+      assert response.provider_meta[:model_version] == "gpt-4-0125"
+    end
+  end
+
+  describe "default_decode_stream_event/2 logprobs" do
+    setup do
+      %{model: %LLMDB.Model{provider: :openai, id: "gpt-4"}}
+    end
+
+    test "emits meta chunk with logprobs when choice has logprobs content", %{model: model} do
+      tokens = [
+        %{"token" => "Hello", "logprob" => -0.5, "bytes" => [72]},
+        %{"token" => " world", "logprob" => -0.3, "bytes" => [32]}
+      ]
+
+      event = %{
+        data: %{
+          "choices" => [
+            %{
+              "delta" => %{"content" => "Hello world"},
+              "logprobs" => %{"content" => tokens}
+            }
+          ]
+        }
+      }
+
+      chunks = Defaults.default_decode_stream_event(event, model)
+
+      content_chunk = Enum.find(chunks, &(&1.type == :content))
+      assert content_chunk.text == "Hello world"
+
+      logprobs_chunk =
+        Enum.find(chunks, fn c -> c.type == :meta and Map.has_key?(c.metadata, :logprobs) end)
+
+      assert logprobs_chunk != nil
+      assert logprobs_chunk.metadata.logprobs == tokens
+    end
+
+    test "does not emit logprobs meta chunk when logprobs is nil", %{model: model} do
+      event = %{
+        data: %{
+          "choices" => [
+            %{
+              "delta" => %{"content" => "Hello"},
+              "logprobs" => nil
+            }
+          ]
+        }
+      }
+
+      chunks = Defaults.default_decode_stream_event(event, model)
+
+      assert Enum.any?(chunks, &(&1.type == :content))
+
+      refute Enum.any?(chunks, fn c -> c.type == :meta and Map.has_key?(c.metadata, :logprobs) end)
+    end
+
+    test "does not emit logprobs meta chunk when logprobs key is absent", %{model: model} do
+      event = %{
+        data: %{
+          "choices" => [
+            %{"delta" => %{"content" => "Hello"}}
+          ]
+        }
+      }
+
+      chunks = Defaults.default_decode_stream_event(event, model)
+
+      assert [%StreamChunk{type: :content, text: "Hello"}] = chunks
+    end
+
+    test "does not emit logprobs meta chunk when logprobs content is empty list", %{model: model} do
+      event = %{
+        data: %{
+          "choices" => [
+            %{
+              "delta" => %{"content" => "Hello"},
+              "logprobs" => %{"content" => []}
+            }
+          ]
+        }
+      }
+
+      chunks = Defaults.default_decode_stream_event(event, model)
+
+      refute Enum.any?(chunks, fn c -> c.type == :meta and Map.has_key?(c.metadata, :logprobs) end)
+    end
+  end
+
   describe "default_decode_response/1" do
     test "handles unknown provider prefix in model string without atomizing" do
       req =
