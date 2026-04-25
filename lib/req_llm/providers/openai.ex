@@ -216,7 +216,7 @@ defmodule ReqLLM.Providers.OpenAI do
       doc: "Whether to return log probabilities of output tokens"
     ],
     openai_top_logprobs: [
-      type: :non_neg_integer,
+      type: {:in, 0..20},
       doc:
         "Number of most likely tokens to return at each position (0–20, requires openai_logprobs: true)"
     ]

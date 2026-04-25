@@ -1472,6 +1472,15 @@ defmodule ReqLLM.Providers.OpenAITest do
       assert :openai_logprobs in valid_keys
       assert :openai_top_logprobs in valid_keys
     end
+
+    test "openai_top_logprobs rejects values outside 0-20" do
+      schema = OpenAI.provider_schema()
+
+      assert {:ok, _} = NimbleOptions.validate([openai_top_logprobs: 0], schema)
+      assert {:ok, _} = NimbleOptions.validate([openai_top_logprobs: 20], schema)
+      assert {:error, _} = NimbleOptions.validate([openai_top_logprobs: 21], schema)
+      assert {:error, _} = NimbleOptions.validate([openai_top_logprobs: -1], schema)
+    end
   end
 
   describe "ResponsesAPI tool encoding" do
