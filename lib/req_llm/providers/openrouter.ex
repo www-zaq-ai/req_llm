@@ -86,6 +86,15 @@ defmodule ReqLLM.Providers.OpenRouter do
       type: :integer,
       doc: "Number of top log probabilities to return"
     ],
+    openai_logprobs: [
+      type: :boolean,
+      doc: "Whether to return log probabilities of the output tokens (OpenAI-compatible)"
+    ],
+    openai_top_logprobs: [
+      type: :integer,
+      doc:
+        "Number of most likely tokens to return at each position (0–20, requires openai_logprobs: true)"
+    ],
     app_referer: [
       type: :string,
       doc: "HTTP-Referer header for app identification on OpenRouter"
@@ -310,7 +319,7 @@ defmodule ReqLLM.Providers.OpenRouter do
     |> maybe_put(:repetition_penalty, request.options[:openrouter_repetition_penalty])
     |> maybe_put(:min_p, request.options[:openrouter_min_p])
     |> maybe_put(:top_a, request.options[:openrouter_top_a])
-    |> maybe_put(:top_logprobs, request.options[:openrouter_top_logprobs])
+    |> add_logprobs(request.options)
     |> maybe_put(:reasoning_effort, request.options[:reasoning_effort])
     |> maybe_put(:usage, request.options[:openrouter_usage])
     |> maybe_put(:plugins, request.options[:openrouter_plugins])
@@ -354,6 +363,17 @@ defmodule ReqLLM.Providers.OpenRouter do
   end
 
   # Helper function for adding stream options (mirrors OpenAI implementation)
+  defp add_logprobs(body, request_options) do
+    provider_opts = request_options[:provider_options] || []
+
+    body
+    |> maybe_put(:logprobs, provider_opts[:openai_logprobs])
+    |> maybe_put(
+      :top_logprobs,
+      provider_opts[:openai_top_logprobs] || request_options[:openrouter_top_logprobs]
+    )
+  end
+
   defp add_stream_options(body, request_options) do
     # Automatically include usage data when streaming for better user experience
     if request_options[:stream] do
