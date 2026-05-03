@@ -160,7 +160,7 @@ defmodule ReqLLM.Providers.OpenAI.ResponsesAPI do
         handle_function_call_arguments_delta(data)
 
       "response.function_call_arguments.done" ->
-        []
+        handle_function_call_arguments_done(data)
 
       "response.function_call.name.delta" ->
         handle_function_call_name_delta(data)
@@ -169,7 +169,7 @@ defmodule ReqLLM.Providers.OpenAI.ResponsesAPI do
         handle_output_item_added(data)
 
       "response.output_item.done" ->
-        []
+        handle_output_item_done(data)
 
       "response.completed" ->
         capture_completion_metadata(data, %{terminal?: true, finish_reason: :stop})
@@ -196,13 +196,38 @@ defmodule ReqLLM.Providers.OpenAI.ResponsesAPI do
     state = ensure_stream_state(state)
     {event_type, data} = stream_event_type(event)
     state = track_tool_call(state, event_type, data)
-    chunks = decode_stream_event(event, model)
+    chunks = decode_stream_event_with_state(event, model, event_type, data, state)
+    state = track_emitted_tool_call_chunks(state, chunks, event_type, data)
     {updated_chunks, updated_state} = merge_tool_usage_into_chunks(chunks, state)
     {updated_chunks, updated_state}
   end
 
   def init_stream_state do
-    %{tool_call_ids: %{}, usage_emitted?: false}
+    %{
+      tool_call_ids: %{},
+      usage_emitted?: false,
+      emitted_tool_call_indexes: MapSet.new(),
+      argument_fragment_indexes: MapSet.new(),
+      text_delta_indexes: MapSet.new()
+    }
+  end
+
+  defp decode_stream_event_with_state(_event, _model, "response.output_item.done", data, state) do
+    handle_output_item_done(data, state)
+  end
+
+  defp decode_stream_event_with_state(
+         _event,
+         _model,
+         "response.function_call_arguments.done",
+         data,
+         state
+       ) do
+    handle_function_call_arguments_done(data, state)
+  end
+
+  defp decode_stream_event_with_state(event, model, _event_type, _data, _state) do
+    decode_stream_event(event, model)
   end
 
   defp capture_completion_metadata(data, meta) do
@@ -240,7 +265,46 @@ defmodule ReqLLM.Providers.OpenAI.ResponsesAPI do
   end
 
   defp ensure_stream_state(nil), do: init_stream_state()
-  defp ensure_stream_state(state), do: state
+
+  defp ensure_stream_state(state) when is_map(state) do
+    state
+    |> Map.put_new(:tool_call_ids, %{})
+    |> Map.put_new(:usage_emitted?, false)
+    |> Map.put_new(:emitted_tool_call_indexes, MapSet.new())
+    |> Map.put_new(:argument_fragment_indexes, MapSet.new())
+    |> Map.put_new(:text_delta_indexes, MapSet.new())
+  end
+
+  defp track_emitted_tool_call_chunks(state, chunks, event_type, data) do
+    chunks
+    |> Enum.reduce(track_text_delta_event(state, event_type, data), fn
+      %ReqLLM.StreamChunk{type: :tool_call, metadata: metadata}, acc ->
+        index = metadata[:index] || metadata["index"] || 0
+        indexes = Map.get(acc, :emitted_tool_call_indexes, MapSet.new())
+        %{acc | emitted_tool_call_indexes: MapSet.put(indexes, index)}
+
+      %ReqLLM.StreamChunk{type: :meta, metadata: %{tool_call_args: %{index: index}}}, acc ->
+        indexes = Map.get(acc, :argument_fragment_indexes, MapSet.new())
+        %{acc | argument_fragment_indexes: MapSet.put(indexes, index)}
+
+      _chunk, acc ->
+        acc
+    end)
+  end
+
+  defp track_text_delta_event(state, "response.output_text.delta", data) when is_map(data) do
+    index = stream_output_index(data)
+    delta = data["delta"] || data[:delta] || ""
+
+    if delta == "" do
+      state
+    else
+      indexes = Map.get(state, :text_delta_indexes, MapSet.new())
+      %{state | text_delta_indexes: MapSet.put(indexes, index)}
+    end
+  end
+
+  defp track_text_delta_event(state, _event_type, _data), do: state
 
   defp stream_event_type(%{data: data} = event) when is_map(data) do
     type = Map.get(event, :event) || Map.get(event, "event") || data["event"] || data["type"]
@@ -505,7 +569,7 @@ defmodule ReqLLM.Providers.OpenAI.ResponsesAPI do
     opts_map = if is_map(opts), do: opts, else: Map.new(opts)
     provider_opts = opts_map[:provider_options] || []
 
-    store = Keyword.get(provider_opts, :store, true)
+    store = Keyword.get(provider_opts, :store, default_store(model_name))
 
     previous_response_id =
       if store != false do
@@ -616,6 +680,10 @@ defmodule ReqLLM.Providers.OpenAI.ResponsesAPI do
     else
       body
     end
+  end
+
+  defp default_store(model_name) do
+    !ReqLLM.Providers.OpenAI.AdapterHelpers.codex_model?(model_name)
   end
 
   defp encode_tool_message_inline(%ReqLLM.Message{role: :tool} = msg) do
@@ -912,6 +980,30 @@ defmodule ReqLLM.Providers.OpenAI.ResponsesAPI do
 
   defp handle_function_call_arguments_delta(_), do: []
 
+  defp handle_function_call_arguments_done(data, state \\ nil)
+
+  defp handle_function_call_arguments_done(%{} = data, state) do
+    index = stream_output_index(data)
+
+    if argument_fragment_emitted?(state, index) do
+      []
+    else
+      arguments = data["arguments"] || data[:arguments] || data["delta"] || data[:delta]
+
+      if is_binary(arguments) and arguments != "" do
+        [
+          ReqLLM.StreamChunk.meta(%{
+            tool_call_args: %{index: index, fragment: arguments}
+          })
+        ]
+      else
+        []
+      end
+    end
+  end
+
+  defp handle_function_call_arguments_done(_, _), do: []
+
   defp handle_function_call_name_delta(%{"delta" => name} = data)
        when is_binary(name) and name != "" do
     # Use output_index to match the tool_call index from response.output_item.added
@@ -942,6 +1034,104 @@ defmodule ReqLLM.Providers.OpenAI.ResponsesAPI do
   end
 
   defp handle_output_item_added(_), do: []
+
+  defp handle_output_item_done(data, state \\ nil)
+
+  defp handle_output_item_done(%{"item" => item} = data, state) when is_map(item) do
+    handle_output_item_done_item(item, data, state)
+  end
+
+  defp handle_output_item_done(%{item: item} = data, state) when is_map(item) do
+    handle_output_item_done_item(item, data, state)
+  end
+
+  defp handle_output_item_done(_, _), do: []
+
+  defp handle_output_item_done_item(item, data, state) do
+    case item["type"] || item[:type] do
+      "function_call" -> handle_function_call_item_done(item, data, state)
+      "message" -> handle_message_item_done(item, data, state)
+      _ -> []
+    end
+  end
+
+  defp handle_function_call_item_done(item, data, state) do
+    index = stream_output_index(data)
+    name = item["name"] || item[:name]
+    call_id = item["call_id"] || item[:call_id] || item["id"] || item[:id]
+    arguments = item["arguments"] || item[:arguments]
+
+    chunks =
+      if is_binary(name) and name != "" and not tool_call_emitted?(state, index) do
+        [ReqLLM.StreamChunk.tool_call(name, %{}, %{id: call_id, index: index})]
+      else
+        []
+      end
+
+    if is_binary(arguments) and arguments != "" and not argument_fragment_emitted?(state, index) do
+      chunks ++
+        [
+          ReqLLM.StreamChunk.meta(%{
+            tool_call_args: %{index: index, fragment: arguments}
+          })
+        ]
+    else
+      chunks
+    end
+  end
+
+  defp handle_message_item_done(item, data, state) do
+    index = stream_output_index(data)
+
+    if text_delta_emitted?(state, index) do
+      []
+    else
+      text = message_item_text(item)
+      if text == "", do: [], else: [ReqLLM.StreamChunk.text(text)]
+    end
+  end
+
+  defp message_item_text(%{"content" => content}) when is_list(content) do
+    content
+    |> Enum.filter(&(&1["type"] in ["output_text", "text"]))
+    |> Enum.map_join("", &extract_text_field/1)
+  end
+
+  defp message_item_text(%{content: content}) when is_list(content) do
+    content
+    |> Enum.filter(&((Map.get(&1, :type) || Map.get(&1, "type")) in ["output_text", "text"]))
+    |> Enum.map_join("", &extract_text_field/1)
+  end
+
+  defp message_item_text(_), do: ""
+
+  defp tool_call_emitted?(nil, _index), do: false
+
+  defp tool_call_emitted?(state, index) do
+    state
+    |> Map.get(:emitted_tool_call_indexes, MapSet.new())
+    |> MapSet.member?(index)
+  end
+
+  defp argument_fragment_emitted?(nil, _index), do: false
+
+  defp argument_fragment_emitted?(state, index) do
+    state
+    |> Map.get(:argument_fragment_indexes, MapSet.new())
+    |> MapSet.member?(index)
+  end
+
+  defp text_delta_emitted?(nil, _index), do: false
+
+  defp text_delta_emitted?(state, index) do
+    state
+    |> Map.get(:text_delta_indexes, MapSet.new())
+    |> MapSet.member?(index)
+  end
+
+  defp stream_output_index(data) when is_map(data) do
+    data["output_index"] || data[:output_index] || data["index"] || data[:index] || 0
+  end
 
   defp maybe_put_string(map, _key, nil), do: map
   defp maybe_put_string(map, key, value), do: Map.put(map, key, value)

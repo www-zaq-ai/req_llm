@@ -9,6 +9,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- changelog -->
 
+## [v1.11.0](https://github.com/agentjido/req_llm/compare/v1.10.0...v1.11.0) (2026-05-01)
+
+
+
+
+### Features:
+
+* openrouter: support session_id option by mikehostetler
+
+* support reusable Responses WebSocket sessions (#663) by Danila Poyarkov
+
+* azure: support Kimi family on Azure AI Foundry by Senthil
+
+* openai: add logprobs support for chat completions by Jad Tarabay
+
+* schema: support {:or, [type, nil]} for nullable JSON Schema types (#637) by Gustavo Honorato
+
+* anthropic: signal tool execution failures with is_error (#625) by BlueHotDog
+
+* add cost usage support for rerank (#622) by sezaru
+
+* azure: support Azure OpenAI v1 GA API (no api-version) (#623) by neilberkman
+
+### Bug Fixes:
+
+* stream: emit terminal :error chunk for SSE error events from OpenAI-compatible providers (#661) by RamXX
+
+* deepseek: inject reasoning_content to all assistant messages (#660) by Bill Huang
+
+* openai: decode completed responses stream items (#662) by Itay Adler
+
+* openai: disable response storage for codex models by Itay Adler
+
+* fix google gemini token calculation by mikehostetler
+
+* encode thinking content parts as reasoning_content for OpenAI-compatible providers (#647) by Senthil
+
+* anthropic: reject trailing assistant object contexts by mikehostetler
+
+* openrouter: support embeddings by mikehostetler
+
+* google: preserve Gemini SSE finish reasons by ycastorium
+
+* openai: preserve responses assistant phases (#636) by mikehostetler
+
+* bedrock: preserve native Claude thinking signatures by mikehostetler
+
+* vertex: preserve Claude thinking signatures in streams by mikehostetler
+
+* azure: preserve Claude thinking signatures in streams by mikehostetler
+
+* anthropic: preserve streamed thinking blocks (#627) by mikehostetler
+
+* openai: encode multimodal tool outputs in Responses API (#624) by BlueHotDog
+
+* include embedding cost metadata (#621) by mikehostetler
+
+* openai: dedupe Responses API commentary and final answer (#618) by Zack
+
+### Performance:
+
+* streaming: adopt server_sent_events 1.0 parser (#649) by mikehostetler
+
 ## [v1.10.0](https://github.com/agentjido/req_llm/compare/v1.9.0...v1.10.0) (2026-04-17)
 
 

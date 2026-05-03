@@ -244,4 +244,95 @@ defmodule ReqLLM.Providers.DeepseekTest do
       assert headers_map["Authorization"] == "Bearer test-key-12345"
     end
   end
+
+  describe "build_body regression" do
+    test "adds reasoning_content to assistant messages without it" do
+      model = deepseek_model()
+
+      follow_up_context =
+        ReqLLM.Context.new([
+          ReqLLM.Context.system("You are a helpful assistant."),
+          ReqLLM.Context.user("Hello"),
+          ReqLLM.Context.assistant("Hi there!"),
+          ReqLLM.Context.user("How are you?")
+        ])
+
+      mock_request = %Req.Request{
+        options: [
+          context: follow_up_context,
+          model: model.model
+        ]
+      }
+
+      body = Deepseek.build_body(mock_request)
+
+      assistant_msg =
+        Enum.find(body.messages, fn msg ->
+          Map.get(msg, :role) == "assistant" or Map.get(msg, "role") == "assistant"
+        end)
+
+      refute is_nil(assistant_msg)
+      assert Map.get(assistant_msg, :reasoning_content) == ""
+    end
+
+    test "preserves existing reasoning_content in assistant messages" do
+      model = deepseek_model()
+
+      messages_with_reasoning = [
+        %{role: "system", content: "You are helpful."},
+        %{role: "user", content: "Hello"},
+        %{role: "assistant", content: "Previous response", reasoning_content: "kept reasoning"},
+        %{role: "user", content: "Follow up"}
+      ]
+
+      mock_request = %Req.Request{
+        options: [
+          messages: messages_with_reasoning,
+          model: model.model
+        ]
+      }
+
+      body = Deepseek.build_body(mock_request)
+
+      assistant_msg =
+        Enum.find(body.messages, fn msg ->
+          Map.get(msg, "role") == "assistant" or Map.get(msg, :role) == "assistant"
+        end)
+
+      refute is_nil(assistant_msg)
+      assert Map.get(assistant_msg, :reasoning_content) == "kept reasoning"
+    end
+
+    test "preserves existing string-keyed reasoning_content in assistant messages" do
+      model = deepseek_model()
+
+      messages_with_reasoning = [
+        %{"role" => "user", "content" => "Hello"},
+        %{
+          "role" => "assistant",
+          "content" => "Previous response",
+          "reasoning_content" => "kept reasoning"
+        },
+        %{"role" => "user", "content" => "Follow up"}
+      ]
+
+      mock_request = %Req.Request{
+        options: [
+          messages: messages_with_reasoning,
+          model: model.model
+        ]
+      }
+
+      body = Deepseek.build_body(mock_request)
+
+      assistant_msg =
+        Enum.find(body.messages, fn msg ->
+          Map.get(msg, "role") == "assistant" or Map.get(msg, :role) == "assistant"
+        end)
+
+      refute is_nil(assistant_msg)
+      assert Map.get(assistant_msg, "reasoning_content") == "kept reasoning"
+      refute Map.has_key?(assistant_msg, :reasoning_content)
+    end
+  end
 end

@@ -114,6 +114,35 @@ defmodule ReqLLM.Providers.OpenAICodexTest do
       assert Enum.all?(body["input"], &(&1["role"] != "system"))
     end
 
+    test "builds websocket request with codex websocket beta" do
+      {:ok, model} = ReqLLM.model("openai_codex:gpt-5.3-codex-spark")
+
+      {:ok, config} =
+        OpenAICodex.attach_websocket_stream(
+          model,
+          ReqLLM.context([ReqLLM.Context.user("Say hi")]),
+          provider_options: [
+            auth_mode: :oauth,
+            access_token: jwt_with_account_id("acct_ws"),
+            session_id: "req_ws"
+          ]
+        )
+
+      assert config.url == "wss://chatgpt.com/backend-api/codex/responses"
+      assert {"openai-beta", "responses_websockets=2026-02-06"} in config.headers
+      assert {"session_id", "req_ws"} in config.headers
+      assert {"x-client-request-id", "req_ws"} in config.headers
+      refute Enum.any?(config.headers, &(elem(&1, 0) == "content-type"))
+
+      payload = config.initial_messages |> hd() |> Jason.decode!()
+
+      assert payload["type"] == "response.create"
+      assert payload["model"] == "gpt-5.3-codex-spark"
+      assert payload["store"] == false
+      assert payload["stream"] == true
+      refute Map.has_key?(payload, "response")
+    end
+
     test "loads oauth_file without explicit auth_mode for streaming" do
       {:ok, model} = ReqLLM.model("openai_codex:gpt-5.3-codex-spark")
       path = oauth_file_path("stream")
@@ -181,6 +210,34 @@ defmodule ReqLLM.Providers.OpenAICodexTest do
                body["input"],
                &(&1["type"] == "function_call_output" and &1["call_id"] == "call_123")
              )
+    end
+
+    test "omits previous_response_id from context metadata while keeping store=false" do
+      {:ok, model} = ReqLLM.model("openai_codex:gpt-5.3-codex-spark")
+
+      context =
+        ReqLLM.context([
+          ReqLLM.Context.assistant("Previous answer", metadata: %{response_id: "resp_prev_789"}),
+          ReqLLM.Context.user("Follow up")
+        ])
+
+      {:ok, request} =
+        OpenAICodex.attach_stream(
+          model,
+          context,
+          [
+            provider_options: [
+              auth_mode: :oauth,
+              access_token: jwt_with_account_id("acct_context_resume")
+            ]
+          ],
+          nil
+        )
+
+      body = Jason.decode!(request.body)
+
+      refute Map.has_key?(body, "previous_response_id")
+      assert body["store"] == false
     end
 
     test "omits previous_response_id for explicit tool_outputs resume while keeping store=false" do

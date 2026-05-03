@@ -1209,6 +1209,115 @@ defmodule Provider.OpenAI.ResponsesAPIUnitTest do
       assert [] = ResponsesAPI.decode_stream_event(event, model)
     end
 
+    test "decodes completed function_call output items", %{model: model} do
+      event = %{
+        data: %{
+          "event" => "response.output_item.done",
+          "output_index" => 0,
+          "item" => %{
+            "type" => "function_call",
+            "call_id" => "call_123",
+            "name" => "get_weather",
+            "arguments" => ~s({"location":"SF"})
+          }
+        }
+      }
+
+      assert [tool_chunk, args_chunk] = ResponsesAPI.decode_stream_event(event, model)
+      assert tool_chunk.type == :tool_call
+      assert tool_chunk.name == "get_weather"
+      assert tool_chunk.metadata.id == "call_123"
+      assert tool_chunk.metadata.index == 0
+      assert args_chunk.metadata.tool_call_args.fragment == ~s({"location":"SF"})
+    end
+
+    test "decodes completed message output items", %{model: model} do
+      event = %{
+        data: %{
+          "event" => "response.output_item.done",
+          "output_index" => 0,
+          "item" => %{
+            "type" => "message",
+            "content" => [%{"type" => "output_text", "text" => "Final answer"}]
+          }
+        }
+      }
+
+      assert [chunk] = ResponsesAPI.decode_stream_event(event, model)
+      assert chunk.type == :content
+      assert chunk.text == "Final answer"
+    end
+
+    test "stateful decoding avoids duplicate completed output items", %{model: model} do
+      added = %{
+        data: %{
+          "event" => "response.output_item.added",
+          "output_index" => 0,
+          "item" => %{
+            "type" => "function_call",
+            "call_id" => "call_123",
+            "name" => "get_weather"
+          }
+        }
+      }
+
+      delta = %{
+        data: %{
+          "event" => "response.function_call_arguments.delta",
+          "output_index" => 0,
+          "delta" => ~s({"location":"SF"})
+        }
+      }
+
+      done = %{
+        data: %{
+          "event" => "response.output_item.done",
+          "output_index" => 0,
+          "item" => %{
+            "type" => "function_call",
+            "call_id" => "call_123",
+            "name" => "get_weather",
+            "arguments" => ~s({"location":"SF"})
+          }
+        }
+      }
+
+      {added_chunks, state} = ResponsesAPI.decode_stream_event(added, model, nil)
+      {delta_chunks, state} = ResponsesAPI.decode_stream_event(delta, model, state)
+      {done_chunks, _state} = ResponsesAPI.decode_stream_event(done, model, state)
+
+      assert [%ReqLLM.StreamChunk{type: :tool_call}] = added_chunks
+      assert [%ReqLLM.StreamChunk{type: :meta}] = delta_chunks
+      assert done_chunks == []
+    end
+
+    test "empty text deltas do not suppress completed message output items", %{model: model} do
+      delta = %{
+        data: %{
+          "event" => "response.output_text.delta",
+          "output_index" => 0,
+          "delta" => ""
+        }
+      }
+
+      done = %{
+        data: %{
+          "event" => "response.output_item.done",
+          "output_index" => 0,
+          "item" => %{
+            "type" => "message",
+            "content" => [%{"type" => "output_text", "text" => "Final answer"}]
+          }
+        }
+      }
+
+      {delta_chunks, state} = ResponsesAPI.decode_stream_event(delta, model, nil)
+      {done_chunks, _state} = ResponsesAPI.decode_stream_event(done, model, state)
+
+      assert delta_chunks == []
+      assert [%ReqLLM.StreamChunk{type: :content, text: "Final answer"}] = done_chunks
+    end
+
     test "decodes completed event", %{model: model} do
       event = %{data: %{"event" => "response.completed"}}
 
@@ -1592,6 +1701,28 @@ defmodule Provider.OpenAI.ResponsesAPIUnitTest do
 
       assert body["previous_response_id"] == "resp_prev_456"
       assert body["store"] == true
+    end
+
+    test "codex models default store to false and suppress previous_response_id" do
+      assistant_msg = %ReqLLM.Message{
+        role: :assistant,
+        content: [%ReqLLM.Message.ContentPart{type: :text, text: "Previous answer"}],
+        metadata: %{response_id: "resp_prev_codex"}
+      }
+
+      user_msg = %ReqLLM.Message{
+        role: :user,
+        content: [%ReqLLM.Message.ContentPart{type: :text, text: "Follow up"}]
+      }
+
+      context = %ReqLLM.Context{messages: [assistant_msg, user_msg]}
+      request = build_request(id: "gpt-5.3-codex", context: context)
+
+      encoded = ResponsesAPI.encode_body(request)
+      body = Jason.decode!(encoded.body)
+
+      refute Map.has_key?(body, "previous_response_id")
+      assert body["store"] == false
     end
 
     test "store: false without prior response_id omits both fields" do
